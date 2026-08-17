@@ -279,21 +279,26 @@ presource_ros() {
   export COLCON_TRACE=1
   export AMENT_TRACE_SETUP_FILES=1
 
-  if [ -f $ROS_PRESOURCE_PATH ]; then
-    rm $ROS_PRESOURCE_PATH
+  # per-process temp file so concurrent shells can't race on $ROS_PRESOURCE_PATH
+  local ROS_PRESOURCE_TMP
+  if ! ROS_PRESOURCE_TMP=$(mktemp "${ROS_PRESOURCE_PATH}.XXXXXX"); then
+    echo "[presource_ros()]: ERROR: cannot create a temporary file next to $ROS_PRESOURCE_PATH, the workspace was not presourced"
+    return 1
   fi
 
-  source /opt/ros/jazzy/setup.$SNAME >> $ROS_PRESOURCE_PATH 2>&1
-  [ -f $ROS_WORKSPACE/install/setup.$SNAME ] && source $ROS_WORKSPACE/install/setup.$SNAME >> $ROS_PRESOURCE_PATH 2>&1
+  source /opt/ros/jazzy/setup.$SNAME >> $ROS_PRESOURCE_TMP 2>&1
+  [ -f $ROS_WORKSPACE/install/setup.$SNAME ] && source $ROS_WORKSPACE/install/setup.$SNAME >> $ROS_PRESOURCE_TMP 2>&1
 
   # remove duplicit lines
-  awk '!seen[$0]++' $ROS_PRESOURCE_PATH > ${ROS_PRESOURCE_PATH}_short
+  awk '!seen[$0]++' $ROS_PRESOURCE_TMP > ${ROS_PRESOURCE_TMP}_short
   # remove comments
-  [ -f /usr/bin/nvim ] && /usr/bin/nvim --headless -E -s -c "%g/^# /norm dd" -c "wqa" -- ${ROS_PRESOURCE_PATH}_short
-  mv ${ROS_PRESOURCE_PATH}_short ${ROS_PRESOURCE_PATH}
+  [ -f /usr/bin/nvim ] && /usr/bin/nvim --headless -E -s -c "%g/^# /norm dd" -c "wqa" -- ${ROS_PRESOURCE_TMP}_short
+  mv ${ROS_PRESOURCE_TMP}_short ${ROS_PRESOURCE_TMP}
 
   # add our marker so we can recognize from which workspace does this originate
-  echo "# $ROS_WORKSPACE" >> $ROS_PRESOURCE_PATH
+  echo "# $ROS_WORKSPACE" >> $ROS_PRESOURCE_TMP
+
+  mv $ROS_PRESOURCE_TMP $ROS_PRESOURCE_PATH
 
   echo "[presource_ros()]: colcon workspace '$ROS_WORKSPACE' was presourced"
 
