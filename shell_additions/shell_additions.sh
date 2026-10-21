@@ -266,7 +266,7 @@ export RCUTILS_COLORIZED_OUTPUT=1
 export ROS_PRESOURCE_PATH=/tmp/ros_presource_output.sh
 
 # version of the cache's format: a cache written in an older format is regenerated even when the workspace's packages did not change
-ROS_PRESOURCE_FORMAT=1
+ROS_PRESOURCE_FORMAT=2
 
 # the workspace's path is used unquoted throughout, so whitespace in it is not supported
 ros_workspace_check() {
@@ -276,6 +276,49 @@ ros_workspace_check() {
       return 1
       ;;
   esac
+}
+
+# sets the colon-separated list in the variable $1 to the entries $2, followed by its own entries without those of ROS installations
+# (/opt/ros/..., $ROS_WORKSPACE/install/... and the install roots in the shell's current $COLCON_PREFIX_PATH, e.g. of a previous
+# workspace) and of $2: applies the entries cached by presource_ros() to the sourcing shell's own value, also when it already has ROS
+# entries from an earlier cache; pure shell without subshells, since every new shell runs it
+_presource_prepend() {
+  local _presource_rest="" _presource_entry _presource_list _presource_roots _presource_root
+  eval "_presource_list=\"\$$1:\""
+  while [ -n "$_presource_list" ]; do
+    _presource_entry=${_presource_list%%:*}
+    _presource_list=${_presource_list#*:}
+    case "$_presource_entry" in
+      "" | /opt/ros | /opt/ros/* | "$ROS_WORKSPACE/install" | "$ROS_WORKSPACE/install/"*) continue ;;
+    esac
+    case ":$2:" in
+      *":$_presource_entry:"*) continue ;;
+    esac
+    _presource_roots="$COLCON_PREFIX_PATH:"
+    while [ -n "$_presource_roots" ]; do
+      _presource_root=${_presource_roots%%:*}
+      _presource_roots=${_presource_roots#*:}
+      case "$_presource_entry" in
+        "$_presource_root" | "$_presource_root/"*) [ -n "$_presource_root" ] && continue 2 ;;
+      esac
+    done
+    _presource_rest=${_presource_rest:+$_presource_rest:}$_presource_entry
+  done
+  eval "export $1=\"\$2\${2:+\${_presource_rest:+:}}\$_presource_rest\""
+}
+
+# prints the entries of the colon-separated list $1 that are not in $2
+_presource_added() {
+  local _presource_added_list="$1:" _presource_entry _presource_out=""
+  while [ -n "$_presource_added_list" ]; do
+    _presource_entry=${_presource_added_list%%:*}
+    _presource_added_list=${_presource_added_list#*:}
+    case ":$2:" in
+      *":$_presource_entry:"*) continue ;;
+    esac
+    [ -n "$_presource_entry" ] && _presource_out=${_presource_out:+$_presource_out:}$_presource_entry
+  done
+  printf '%s' "$_presource_out"
 }
 
 # fingerprint of the packages that sourcing the workspace sets up: colcon's setup finds them by their package index files,
@@ -319,23 +362,42 @@ presource_ros() {
 
   # subshell: reset + sourcing stay local to it, nothing to clean up afterward
   (
-    # only these two are unambiguously ROS-only; others may carry non-ROS content
-    unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH
+    # start from a clean state, so that the cache holds exactly what sourcing adds, not what this shell has on top (a venv, ...),
+    # which would otherwise end up in every shell that sources the cache
+    unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH ROS_DISTRO ROS_VERSION ROS_PYTHON_VERSION ROS_AUTOMATIC_DISCOVERY_RANGE \
+          CMAKE_PREFIX_PATH LD_LIBRARY_PATH PYTHONPATH \
+          GAZEBO_MODEL_PATH GAZEBO_RESOURCE_PATH IGN_GAZEBO_MODEL_PATH IGN_GAZEBO_RESOURCE_PATH \
+          GZ_CONFIG_PATH GZ_SIM_RESOURCE_PATH GZ_SIM_SYSTEM_PLUGIN_PATH
+    local _presource_base_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    export PATH=$_presource_base_path
 
     source /opt/ros/jazzy/setup.$SNAME > /dev/null 2>&1
     [ -f $ROS_WORKSPACE/install/setup.$SNAME ] && source $ROS_WORKSPACE/install/setup.$SNAME > /dev/null 2>&1
 
-    # snapshot final values -- COLCON_TRACE output skips vars whose value looks like a duplicate
-    for _presource_var in AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH \
-                           LD_LIBRARY_PATH PATH PYTHONPATH \
+    # the cache applies the lists below with this function, so it does not depend on this file
+    typeset -f _presource_prepend
+
+    # snapshot the final values, not the COLCON_TRACE output, which skips vars whose value looks like a duplicate
+    # lists: only the entries that sourcing added, put in front of the sourcing shell's own value
+    for _presource_var in CMAKE_PREFIX_PATH LD_LIBRARY_PATH PATH PYTHONPATH \
                            GAZEBO_MODEL_PATH GAZEBO_RESOURCE_PATH IGN_GAZEBO_MODEL_PATH IGN_GAZEBO_RESOURCE_PATH \
-                           GZ_CONFIG_PATH GZ_SIM_RESOURCE_PATH GZ_SIM_SYSTEM_PLUGIN_PATH \
-                           ROS_DISTRO ROS_VERSION ROS_PYTHON_VERSION ROS_AUTOMATIC_DISCOVERY_RANGE; do
+                           GZ_CONFIG_PATH GZ_SIM_RESOURCE_PATH GZ_SIM_SYSTEM_PLUGIN_PATH; do
       eval "_presource_val=\$$_presource_var"
+      [ "$_presource_var" = PATH ] && _presource_val=$(_presource_added "$_presource_val" "$_presource_base_path")
       # escape for safe re-sourcing
+      _presource_val=$(printf '%s' "$_presource_val" | sed 's/[\\"$`]/\\&/g')
+      printf '%s\n' "_presource_prepend $_presource_var \"$_presource_val\""
+    done
+
+    # set only by ROS, so they replace the sourcing shell's value
+    for _presource_var in AMENT_PREFIX_PATH COLCON_PREFIX_PATH ROS_DISTRO ROS_VERSION ROS_PYTHON_VERSION; do
+      eval "_presource_val=\$$_presource_var"
       _presource_val=$(printf '%s' "$_presource_val" | sed 's/[\\"$`]/\\&/g')
       printf '%s\n' "export $_presource_var=\"$_presource_val\""
     done
+
+    # a default of the ROS environment (set-if-unset), the sourcing shell's own value wins
+    echo "export ROS_AUTOMATIC_DISCOVERY_RANGE=\"\${ROS_AUTOMATIC_DISCOVERY_RANGE:-$ROS_AUTOMATIC_DISCOVERY_RANGE}\""
   ) > $ROS_PRESOURCE_TMP
 
   # add the fingerprint and our marker so we can recognize from which workspace, and which of its packages, does this originate
