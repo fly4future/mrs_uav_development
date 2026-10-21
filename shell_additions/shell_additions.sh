@@ -364,6 +364,7 @@ colcon() {
         if [ ! -f "colcon_defaults.yaml" ]; then
           cat <<EOT > colcon_defaults.yaml
 build:
+  symlink-install: true
   mixin:
     - rel-with-deb-info
     - compile-commands
