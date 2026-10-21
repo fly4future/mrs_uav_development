@@ -265,6 +265,25 @@ export RCUTILS_COLORIZED_OUTPUT=1
 
 export ROS_PRESOURCE_PATH=/tmp/ros_presource_output.sh
 
+# version of the cache's format: a cache written in an older format is regenerated even when the workspace's packages did not change
+ROS_PRESOURCE_FORMAT=1
+
+# fingerprint of the packages that sourcing the workspace sets up: colcon's setup finds them by their package index files,
+# install/<pkg>/share/colcon-core/packages/<pkg> (or install/share/colcon-core/packages/<pkg> with --merge-install);
+# a glob instead of find, since every new shell runs it, and in a subshell, so the glob and locale settings stay local
+ros_workspace_fingerprint() {
+  (
+    [ -n "$ZSH_VERSION" ] && setopt null_glob
+    # a locale-independent order of the glob, otherwise shells with different locales would keep regenerating each other's cache
+    LC_ALL=C
+    _presource_fingerprint="$ROS_PRESOURCE_FORMAT"
+    for _presource_index in "$ROS_WORKSPACE"/install/*/share/colcon-core/packages/* "$ROS_WORKSPACE"/install/share/colcon-core/packages/*; do
+      [ -e "$_presource_index" ] && _presource_fingerprint="$_presource_fingerprint ${_presource_index##*/}"
+    done
+    printf '%s' "$_presource_fingerprint"
+  )
+}
+
 presource_ros() {
 
   if [ -z $ROS_WORKSPACE ]; then
@@ -281,6 +300,10 @@ presource_ros() {
     echo "[presource_ros()]: ERROR: cannot create a temporary file next to $ROS_PRESOURCE_PATH, the workspace was not presourced"
     return 1
   fi
+
+  # taken before sourcing: a package installed in the meantime then makes the next shell presource again,
+  # instead of being missing from a cache that claims to include it
+  local ROS_PRESOURCE_FINGERPRINT=$(ros_workspace_fingerprint)
 
   # subshell: reset + sourcing stay local to it, nothing to clean up afterward
   (
@@ -303,7 +326,8 @@ presource_ros() {
     done
   ) > $ROS_PRESOURCE_TMP
 
-  # add our marker so we can recognize from which workspace does this originate
+  # add the fingerprint and our marker so we can recognize from which workspace, and which of its packages, does this originate
+  echo "# fingerprint $ROS_PRESOURCE_FINGERPRINT" >> $ROS_PRESOURCE_TMP
   echo "# $ROS_WORKSPACE" >> $ROS_PRESOURCE_TMP
 
   mv $ROS_PRESOURCE_TMP $ROS_PRESOURCE_PATH
@@ -321,8 +345,14 @@ if [ -z $NIX_ENV_ROOT ]; then
     # check if the workspace changed
     SAME_WS=$(cat $ROS_PRESOURCE_PATH | tail -n 1 | grep -e "# $ROS_WORKSPACE$" | wc -l)
 
+    # check if the workspace's packages changed, e.g. by a build that bypassed colcon() below
+    SAME_PKGS=$(grep -c -x -F "# fingerprint $(ros_workspace_fingerprint)" "$ROS_PRESOURCE_PATH")
+
     if [ $SAME_WS != "1" ]; then
       echo "[presource_ros()]: colcon workspace changed"
+      presource_ros
+    elif [ "$SAME_PKGS" != "1" ]; then
+      echo "[presource_ros()]: packages of the colcon workspace changed"
       presource_ros
     else
       if [ -z $RUN_TMUX ] || ! $RUN_TMUX || [ ! -z $TMUX ]; then
@@ -400,11 +430,25 @@ EOT
         echo -e "\e[33m    Proceeding with standard system defaults for this build.\e[0m"
       fi
 
+      # fingerprint the installed packages, to detect below whether the build added or removed one
+      BEFORE_PKGS=$(ros_workspace_fingerprint)
+
       # if the flow got here, we found the build/COLCON_IGNORE file!
       # this is the folder we're looking for - call the actual colcon command here
       command colcon "$@" --symlink-install
       ret=$? # remember the return value of the colcon command
+
+      # only re-presource (costly) if the package set actually changed; a rebuild of an
+      # existing package doesn't affect AMENT_PREFIX_PATH & co.; also after a failed build,
+      # since the packages that finished before the failure are installed
+      AFTER_PKGS=$(ros_workspace_fingerprint)
+      if [ "$BEFORE_PKGS" != "$AFTER_PKGS" ]; then
+        presource_ros
+        source $ROS_PRESOURCE_PATH
+      fi
+
       cd "$CURRENT_PATH" # return to the path where this command was originaly called
+
       return $ret # return the original return value of the colcon command
 
       ;;
