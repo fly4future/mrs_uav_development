@@ -275,10 +275,6 @@ presource_ros() {
     echo "[presource_ros()]: \$ROS_WORKSPACE/install does not exist (\$ROS_WORKSPACE = $ROS_WORKSPACE)."
   fi
 
-  # export sourced shell files rather than sourcing them directly
-  export COLCON_TRACE=1
-  export AMENT_TRACE_SETUP_FILES=1
-
   # per-process temp file so concurrent shells can't race on $ROS_PRESOURCE_PATH
   local ROS_PRESOURCE_TMP
   if ! ROS_PRESOURCE_TMP=$(mktemp "${ROS_PRESOURCE_PATH}.XXXXXX"); then
@@ -286,14 +282,26 @@ presource_ros() {
     return 1
   fi
 
-  source /opt/ros/jazzy/setup.$SNAME >> $ROS_PRESOURCE_TMP 2>&1
-  [ -f $ROS_WORKSPACE/install/setup.$SNAME ] && source $ROS_WORKSPACE/install/setup.$SNAME >> $ROS_PRESOURCE_TMP 2>&1
+  # subshell: reset + sourcing stay local to it, nothing to clean up afterward
+  (
+    # only these two are unambiguously ROS-only; others may carry non-ROS content
+    unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH
 
-  # remove duplicit lines
-  awk '!seen[$0]++' $ROS_PRESOURCE_TMP > ${ROS_PRESOURCE_TMP}_short
-  # remove comments
-  [ -f /usr/bin/nvim ] && /usr/bin/nvim --headless -E -s -c "%g/^# /norm dd" -c "wqa" -- ${ROS_PRESOURCE_TMP}_short
-  mv ${ROS_PRESOURCE_TMP}_short ${ROS_PRESOURCE_TMP}
+    source /opt/ros/jazzy/setup.$SNAME > /dev/null 2>&1
+    [ -f $ROS_WORKSPACE/install/setup.$SNAME ] && source $ROS_WORKSPACE/install/setup.$SNAME > /dev/null 2>&1
+
+    # snapshot final values -- COLCON_TRACE output skips vars whose value looks like a duplicate
+    for _presource_var in AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH \
+                           LD_LIBRARY_PATH PATH PYTHONPATH \
+                           GAZEBO_MODEL_PATH GAZEBO_RESOURCE_PATH IGN_GAZEBO_MODEL_PATH IGN_GAZEBO_RESOURCE_PATH \
+                           GZ_CONFIG_PATH GZ_SIM_RESOURCE_PATH GZ_SIM_SYSTEM_PLUGIN_PATH \
+                           ROS_DISTRO ROS_VERSION ROS_PYTHON_VERSION ROS_AUTOMATIC_DISCOVERY_RANGE; do
+      eval "_presource_val=\$$_presource_var"
+      # escape for safe re-sourcing
+      _presource_val=$(printf '%s' "$_presource_val" | sed 's/[\\"$`]/\\&/g')
+      printf '%s\n' "export $_presource_var=\"$_presource_val\""
+    done
+  ) > $ROS_PRESOURCE_TMP
 
   # add our marker so we can recognize from which workspace does this originate
   echo "# $ROS_WORKSPACE" >> $ROS_PRESOURCE_TMP
@@ -302,9 +310,8 @@ presource_ros() {
 
   echo "[presource_ros()]: colcon workspace '$ROS_WORKSPACE' was presourced"
 
-  if [ -z $RUN_TMUX ] || ! $RUN_TMUX; then
-    source $ROS_PRESOURCE_PATH
-  fi
+  # apply to this shell (the sourcing above only happened in the subshell)
+  source $ROS_PRESOURCE_PATH
 }
 
 if [ -z $NIX_ENV_ROOT ]; then
