@@ -268,6 +268,16 @@ export ROS_PRESOURCE_PATH=/tmp/ros_presource_output.sh
 # version of the cache's format: a cache written in an older format is regenerated even when the workspace's packages did not change
 ROS_PRESOURCE_FORMAT=1
 
+# the workspace's path is used unquoted throughout, so whitespace in it is not supported
+ros_workspace_check() {
+  case "$ROS_WORKSPACE" in
+    *[[:space:]]*)
+      echo -e "\e[1;31m[presource_ros()]: ERROR: \$ROS_WORKSPACE must not contain whitespace ('$ROS_WORKSPACE'), the workspace is not sourced\e[0m"
+      return 1
+      ;;
+  esac
+}
+
 # fingerprint of the packages that sourcing the workspace sets up: colcon's setup finds them by their package index files,
 # install/<pkg>/share/colcon-core/packages/<pkg> (or install/share/colcon-core/packages/<pkg> with --merge-install);
 # a glob instead of find, since every new shell runs it, and in a subshell, so the glob and locale settings stay local
@@ -289,6 +299,8 @@ presource_ros() {
   if [ -z $ROS_WORKSPACE ]; then
     return 0
   fi
+
+  ros_workspace_check || return 1
 
   if [ ! -d ${ROS_WORKSPACE}/install ]; then
     echo "[presource_ros()]: \$ROS_WORKSPACE/install does not exist (\$ROS_WORKSPACE = $ROS_WORKSPACE)."
@@ -344,7 +356,7 @@ if [ -z "$NIX_ENV_ROOT" ]; then
 
     source /opt/ros/jazzy/setup.$SNAME
 
-  else
+  elif ros_workspace_check; then
 
     # (re)generate the cache in a subshell, whether this shell sources it is decided below
     if [ ! -f "$ROS_PRESOURCE_PATH" ]; then
@@ -398,6 +410,8 @@ EOT
       ;;
 
     build*)
+
+      ros_workspace_check || return 1
 
       # go up the folder tree until we find the build/COLCON_IGNORE file or until we reach the root
       while [ ! -f "build/COLCON_IGNORE" ]; do
