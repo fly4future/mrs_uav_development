@@ -338,38 +338,30 @@ presource_ros() {
   source $ROS_PRESOURCE_PATH
 }
 
-if [ -z $NIX_ENV_ROOT ]; then
+if [ -z "$NIX_ENV_ROOT" ]; then
 
-  if [ -f ${ROS_PRESOURCE_PATH} ] && [ ! -z $ROS_WORKSPACE ]; then
-
-    # check if the workspace changed
-    SAME_WS=$(cat $ROS_PRESOURCE_PATH | tail -n 1 | grep -e "# $ROS_WORKSPACE$" | wc -l)
-
-    # check if the workspace's packages changed, e.g. by a build that bypassed colcon() below
-    SAME_PKGS=$(grep -c -x -F "# fingerprint $(ros_workspace_fingerprint)" "$ROS_PRESOURCE_PATH")
-
-    if [ $SAME_WS != "1" ]; then
-      echo "[presource_ros()]: colcon workspace changed"
-      presource_ros
-    elif [ "$SAME_PKGS" != "1" ]; then
-      echo "[presource_ros()]: packages of the colcon workspace changed"
-      presource_ros
-    else
-      if [ -z $RUN_TMUX ] || ! $RUN_TMUX || [ ! -z $TMUX ]; then
-        source $ROS_PRESOURCE_PATH
-      fi
-    fi
-
-  # elif [ -z $ROS_WORKSPACE ] && ([ -z $RUN_TMUX ] || ! $RUN_TMUX ); then
-  elif [ -z $ROS_WORKSPACE ]; then
+  if [ -z "$ROS_WORKSPACE" ]; then
 
     source /opt/ros/jazzy/setup.$SNAME
 
   else
-    presource_ros
 
-    if [ -z $RUN_TMUX ] || ! $RUN_TMUX; then
-      source $ROS_PRESOURCE_PATH
+    # (re)generate the cache in a subshell, whether this shell sources it is decided below
+    if [ ! -f "$ROS_PRESOURCE_PATH" ]; then
+      ( presource_ros )
+    # check if the workspace changed
+    elif [ "$(tail -n 1 "$ROS_PRESOURCE_PATH")" != "# $ROS_WORKSPACE" ]; then
+      echo "[presource_ros()]: colcon workspace changed"
+      ( presource_ros )
+    # check if the workspace's packages changed, e.g. by a build that bypassed colcon() below
+    elif ! grep -q -x -F "# fingerprint $(ros_workspace_fingerprint)" "$ROS_PRESOURCE_PATH"; then
+      echo "[presource_ros()]: packages of the colcon workspace changed"
+      ( presource_ros )
+    fi
+
+    # the shell that only starts tmux does not need the environment, the shells inside tmux source it themselves
+    if [ -f "$ROS_PRESOURCE_PATH" ] && { [ -z "$RUN_TMUX" ] || ! $RUN_TMUX || [ -n "$TMUX" ]; }; then
+      source "$ROS_PRESOURCE_PATH"
     fi
   fi
 
@@ -444,7 +436,6 @@ EOT
       AFTER_PKGS=$(ros_workspace_fingerprint)
       if [ "$BEFORE_PKGS" != "$AFTER_PKGS" ]; then
         presource_ros
-        source $ROS_PRESOURCE_PATH
       fi
 
       cd "$CURRENT_PATH" # return to the path where this command was originaly called
